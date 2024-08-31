@@ -108,28 +108,26 @@ def process_pdf(pdf_path, output_path, summary_number):
     doc = fitz.open(pdf_path)
     new_doc = fitz.open()
 
-    a4_width, a4_height = 595, 842  # A4 dimensions in points
+    a4_width, a4_height = 595, 842  # A4 像素点尺寸
+    top_margin = 60  # 上边距 60 点
 
     for page in doc:  # 处理整个文档中的所有页面
         ratio = calculate_table_to_page_ratio(page)
         page_width = page.rect.width
         page_height = page.rect.height
-        print(f"Processing page {page.number + 1}: Ratio = {ratio:.2f}")
-
+        
         if ratio >= 0.8:
             # 如果表格占比大于等于80%，则按原页面尺寸的82%缩放
             scale = 0.82
         else:
             # 否则，保持原尺寸不变
-            scale = min(a4_width / page_width, a4_height / page_height)
+            scale = min(a4_width / page_width, (a4_height-top_margin) / page_height)
 
         # 创建新的 PDF 页面
         new_page = new_doc.new_page(width=a4_width, height=a4_height)
         
         # 应用变换矩阵
-        mat = fitz.Matrix(scale, scale)
-        new_page.show_pdf_page(fitz.Rect(0, 0, a4_width, a4_height), doc, page.number)
-        #new_page.transform(mat)
+        new_page.show_pdf_page(fitz.Rect(0, top_margin, a4_width, a4_height), doc, page.number)
     
     # 保存处理后的文件
     new_pdf_path = os.path.join(output_path, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
@@ -158,8 +156,6 @@ def process_files(folder_path, summary_pdf_files):
 
                    # 处理PDF文件
                    print("========================================")
-                   print(f"{new_file_path}")
-                   print(f"{new_pdf_path}")
                    process_pdf(new_file_path, new_pdf_path, summary_number)                   
                 
         except Exception as e:
