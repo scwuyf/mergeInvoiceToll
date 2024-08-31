@@ -1,4 +1,4 @@
-import os
+import os, io, sys
 import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
@@ -24,6 +24,9 @@ def create_config_file():
     # 添加配置节
     config.set('config', 'Binding_Position', '1')
     config.set('config', 'summary_page_position', '1')
+    config.set('config', 'header_or_footer', '1')
+    config.set('config', 'system_font_path', r'c:\windows\Fonts\simhei.ttf')
+        
     # 写入配置文件
     with open('settingtoll.ini', 'w') as configfile:
         config.write(configfile)
@@ -34,19 +37,41 @@ def read_config_file():
     
     # 读取配置文件
     config.read('settingtoll.ini')
+    
+    if not os.path.exists('settingtoll.ini'):
+        create_config_file()
+
+    config.read('settingtoll.ini')
         
     try:
         # 从配置文件中获取全局变量
         global Binding_Position
         global summary_page_position
+        global header_or_footer
+        global system_font_path
+        
         Binding_Position = config.getint('config', 'Binding_Position')
         summary_page_position = config.getint('config', 'summary_page_position')
-    except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-        os.remove('settingtoll.ini')
-        create_config_file()
-        config.read('settingtoll.ini')
-        Binding_Position = config.getint('config', 'Binding_Position')
-        summary_page_position = config.getint('config', 'summary_page_position')
+        header_or_footer = config.getint('config', 'header_or_footer')
+        system_font_path = config.get('config', 'system_font_path')
+        
+        # 检查设置项的合法性
+        if Binding_Position not in [1, 2]:
+            raise ValueError("Binding_Position 的值必须是 1 或 2\n\n请修改程序所在文件夹下configtoll.ini文件有关设置项")
+        if summary_page_position not in [1, 2]:
+            raise ValueError("summary_page_position 的值必须是 1 或 2\n\n请修改程序所在文件夹下configtoll.ini文件有关设置项")
+        if header_or_footer not in [1, 2]:
+            raise ValueError("header_or_footer 的值必须是 1 或 2\n\n请修改程序所在文件夹下configtoll.ini文件有关设置项")
+    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
+        show_error_message(str(e))
+        sys.exit()
+        
+def show_error_message(message):
+    """显示错误消息并退出程序"""
+    root = tk.Tk()
+    root.withdraw()  # 隐藏主窗口
+    messagebox.showerror("配置文件错误", message)
+    root.destroy()
 
     if not os.path.exists('settingtoll.ini'):
         create_config_file()
@@ -126,8 +151,11 @@ def process_pdf(pdf_path, output_path, summary_number):
         # 创建新的 PDF 页面
         new_page = new_doc.new_page(width=a4_width, height=a4_height)
         
-        # 应用变换矩阵
-        new_page.show_pdf_page(fitz.Rect(0, top_margin, a4_width, a4_height), doc, page.number)
+        # 计算变换矩阵
+        mat = fitz.Matrix(scale, scale)
+        # 设置新的页面内容位置
+        rect = fitz.Rect(0, top_margin, a4_width, a4_height)
+        new_page.show_pdf_page(rect, doc, page.number)
     
     # 保存处理后的文件
     new_pdf_path = os.path.join(output_path, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
@@ -152,10 +180,9 @@ def process_files(folder_path, summary_pdf_files):
                    new_file_name = f"票据汇总单_{summary_number}.pdf"
                    new_file_path = os.path.join(output_folder, new_file_name)
                    shutil.copy(pdf_path, new_file_path)
-                   print(f"已将文件 {pdf_file} 复制并重命名为 {new_file_name}")
+                   #print(f"已将文件 {pdf_file} 复制并重命名为 {new_file_name}")
 
                    # 处理PDF文件
-                   print("========================================")
                    process_pdf(new_file_path, new_pdf_path, summary_number)                   
                 
         except Exception as e:
@@ -212,11 +239,11 @@ def process_tables(tables, summary_number, folder_path):
             if is_first_page:
                 # 删除前4行
                 #df = df.iloc[4:]
-                
+
                 # 将第4列复制到第3列
                 df[2] = df[3]
                 is_first_page = False
-            
+
             # 删除第4到最后一个列
             df = df.drop(df.columns[3:], axis=1)
             
@@ -287,13 +314,22 @@ def merge_all_print_versions(output_folder):
     with open(target_pdf_path, "wb") as fout:
         writer.write(fout)
     
-    print(f"所有打印版文件已合并完成，文件已保存为: {target_pdf_name}")
+    print(f"所有打印版文件已合并完成，文件已保存为: {os.path.join(output_folder, target_pdf_name)}")
     return target_pdf_path
 
+def draw_progress_bar(current, total, length=50):
+    percent = int(current / total * 100)
+    filled_length = int(length * current // total)
+    bar = '▮' * filled_length + '-' * (length - filled_length)
+    sys.stdout.write(f'\r[{bar}] {percent}% Complete')
+    sys.stdout.flush()
+
 def match_invoices(invoice_numbers, folder_path, summary_number, output_folder):
-    for invoice_number in invoice_numbers:
+    pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf') and "汇总单" not in f]
+    total_files = len(pdf_files)
+    
+    for index, invoice_number in enumerate(invoice_numbers):
         if len(invoice_number) == 8 and invoice_number.isdigit():
-            pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf') and "汇总单" not in f and "打印temp版" not in f]
             for pdf_file in pdf_files:
                 pdf_path = os.path.join(folder_path, pdf_file)
                 try:
@@ -306,9 +342,12 @@ def match_invoices(invoice_numbers, folder_path, summary_number, output_folder):
                             new_file_name = f"{summary_number}_{invoice_number}.pdf"
                             new_file_path = os.path.join(output_folder, new_file_name)
                             shutil.copy(pdf_path, new_file_path)
-                            #print(f"将原文件 {pdf_file} 重命名为 {new_file_name}")
                 except Exception as e:
                     messagebox.showerror("错误", f"处理文件 {pdf_file} 时发生错误: {e}")
+
+        # 更新进度条
+        draw_progress_bar(index + 1, len(invoice_numbers))
+
     merged_pdf_path = merge_pdfs(summary_number, output_folder)
     append_blank_page_if_needed(merged_pdf_path, output_folder, summary_number)  # 添加空白页使页数为偶数
     final_pdf_path = adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number)  # 调整页面大小并合并到A4
@@ -377,16 +416,43 @@ def append_blank_page_if_needed(merged_pdf_path, output_folder, summary_number):
             #print(f"在文件 {merged_pdf_path} 中添加了一个空白页。")
         #else:
             #print(f"文件 {merged_pdf_path} 的页数已经是偶数，无需添加空白页。")
-
+  
+def create_pdf_with_headerfooter(text, width, height, font_size=8, margin=28.346645669):
+    """生成一个带有页眉或页脚的 PDF 页面，支持中文"""
+    packet = io.BytesIO()
+    can = canvas.Canvas(packet, pagesize=(width, height))
+    
+    # 注册中文字体
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfbase import pdfmetrics
+    
+    pdfmetrics.registerFont(TTFont('ChineseFont', system_font_path))
+    
+    # 设置页脚字体
+    can.setFont("ChineseFont", font_size)
+    
+    # 添加中文页眉页脚
+    if header_or_footer == 1:
+        can.drawString(margin, height-margin, text)
+    else:
+        can.drawString(margin, margin, text)
+    
+    # 保存并关闭
+    can.save()
+    
+    # 读取生成的 PDF 内容
+    packet.seek(0)
+    
+    return PdfReader(packet) 
 
 def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
     # 创建一个新的PDF Writer对象
     writer = PdfWriter()
     width, height = A4
-    print(f" A4页面宽度 = {width}, 高度 = {height}")
+    print("    ")
     
     if Binding_Position == 1:
-       print(f"装订选项 = 短边装订（A4 横向）")
+       #print(f"装订选项 = 短边装订（A4 横向）")
        #短边装订边距
        top_margin = 70.86614173  # 上边距
        bottom_margin = 28.34645669  # 下边距
@@ -396,16 +462,16 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
        # 计算实际的可打印区域
        effective_width = width - left_margin - right_margin
        effective_height = height - top_margin - bottom_margin
-       print(f" A4 页面有效宽度= {effective_width}, 有效高度= {effective_height}")
-       # 获取原始发票页面的高度
+       #print(f" A4 页面有效宽度= {effective_width}, 有效高度= {effective_height}")
+       # 获取原始发票页面的宽度和高度
        original_pdf = PdfReader(merged_pdf_path)
        original_page1_widths = [page.mediabox.width for page in original_pdf.pages[::2]]
        original_page2_widths = [page.mediabox.width for page in original_pdf.pages[1::2]]
    
        original_page1_heights = [page.mediabox.height for page in original_pdf.pages[::2]]
        original_page2_heights = [page.mediabox.height for page in original_pdf.pages[1::2]]
-       print(f" 发票原始页面1宽度= {original_page1_widths}, 高度= {original_page1_heights}")
-       print(f" 发票原始页面2宽度= {original_page2_widths}, 高度= {original_page2_heights}")
+       #print(f" 发票原始页面1宽度= {original_page1_widths}, 高度= {original_page1_heights}")
+       #print(f" 发票原始页面2宽度= {original_page2_widths}, 高度= {original_page2_heights}")
        
        # 打开合并后的PDF文件
        with open(merged_pdf_path, "rb") as fin:
@@ -423,16 +489,16 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
                    
                    # 计算两个页面合并后的有效宽度和高度，使用原始发票页面的高度来计算
                    total_height = original_page1_heights[i // 2] + (original_page2_heights[i // 2] if page2 else 0)
-                   print(f" 合并2张发票页面高度=页面1高度 {original_page1_heights[i // 2]} + 页面2高度 {original_page2_heights[i // 2]} = {total_height}")
+                   #print(f" 合并2张发票页面高度=页面1高度 {original_page1_heights[i // 2]} + 页面2高度 {original_page2_heights[i // 2]} = {total_height}")
                    scale = min(effective_width / float(original_pdf.pages[i].mediabox.width), effective_height / float(total_height))
                    
                    # 缩放第一个页面
                    page1.scale_by(scale)
                    # 调整位置
                    x_offset = effective_width - page1.mediabox.width
-                   print(f" 发票第一组1页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page1.mediabox.width} = {x_offset}")
+                   #print(f" 发票第一组1页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page1.mediabox.width} = {x_offset}")
                    y_offset = effective_height - page1.mediabox.height
-                   print(f" 发票第一组1页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page1.mediabox.height} = {y_offset}")
+                   #print(f" 发票第一组1页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page1.mediabox.height} = {y_offset}")
                    new_page.merge_page(page1)
                    new_page.add_transformation((1, 0, 0, 1, x_offset, y_offset))
                    #new_page.add_transformation((1, 0, 0, 1, 0, 395))
@@ -442,33 +508,40 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
                        page2.scale_by(scale)
                        # 调整位置
                        x_offset2 = effective_width - page2.mediabox.width
-                       print(f" 发票第一组2页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page2.mediabox.width} = {x_offset2}")
+                       #print(f" 发票第一组2页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page2.mediabox.width} = {x_offset2}")
                        y_offset2 = effective_height - (page1.mediabox.height + page2.mediabox.height)
-                       print(f" 发票第一组2页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page2.mediabox.height} = {y_offset2}")
+                       #print(f" 发票第一组2页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page2.mediabox.height} = {y_offset2}")
                        new_page.merge_page(page2)
                        new_page.add_transformation((1, 0, 0, 1, x_offset2, y_offset2))
                        #new_page.add_transformation((1, 0, 0, 1, 0, 25))
-                   
+
                    print(f"处理完成页面 pages {i+1} and {i+2 if page2 else 'N/A'}:")                       
-                   print(f"  缩放比例: {scale}")
-                   print(f"  发票第一组1页 X offset: {x_offset}, Y offset: {y_offset}")
-                   if page2:
-                       print(f"  发票第一组2页 X offset: {x_offset2}, Y offset: {y_offset2}")
-               
-               writer.add_page(new_page)
+                   #print(f"  缩放比例: {scale}")
+                   #print(f"  发票第一组1页 X offset: {x_offset}, Y offset: {y_offset}")
+                   #if page2:
+                   #    print(f"  发票第一组2页 X offset: {x_offset2}, Y offset: {y_offset2}")
+
+                   # 创建带有页脚的 PDF 页面
+                   text = (f"本页发票所属通行费电子票据汇总单号：{summary_number}")
+                   #font_path = system_font_path
+                   pdf_reader = create_pdf_with_headerfooter(text, 595, 842, font_size=8, margin=28.346645669)
+                   
+                   # 合并页脚
+                   new_page.merge_page(pdf_reader.pages[0])
+                   writer.add_page(new_page)
+                
     else:       
-       print(f"装订选项 = 长边装订（A4 纵向）")
+       #print(f"装订选项 = 长边装订（A4 纵向）")
        # 长边装订边距
        top_margin = 42.51968504  # 上边距
        bottom_margin = 28.34645669  # 下边距
        left_margin = 64.34645669  # 左边距
        right_margin = -16.15748031  # 右边距
-       print(f" 上边距={top_margin}, 下边距={bottom_margin}, 左边距={left_margin}, 右边距={right_margin}")
-      
+
        # 计算实际的可打印区域
        effective_width = width - left_margin - right_margin
        effective_height = height - top_margin - bottom_margin
-       print(f" A4 页面有效宽度= {effective_width}, 有效高度= {effective_height}")
+       #print(f" A4 页面有效宽度= {effective_width}, 有效高度= {effective_height}")
        # 获取原始发票页面的高度
        original_pdf = PdfReader(merged_pdf_path)
        original_page1_widths = [page.mediabox.width for page in original_pdf.pages[::2]]
@@ -476,8 +549,8 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
       
        original_page1_heights = [page.mediabox.height for page in original_pdf.pages[::2]]
        original_page2_heights = [page.mediabox.height for page in original_pdf.pages[1::2]]
-       print(f" 发票原始页面1宽度= {original_page1_widths}, 高度= {original_page1_heights}")
-       print(f" 发票原始页面2宽度= {original_page2_widths}, 高度= {original_page2_heights}")
+       #print(f" 发票原始页面1宽度= {original_page1_widths}, 高度= {original_page1_heights}")
+       #print(f" 发票原始页面2宽度= {original_page2_widths}, 高度= {original_page2_heights}")
        
        # 打开合并后的PDF文件
        with open(merged_pdf_path, "rb") as fin:
@@ -497,7 +570,7 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
                    # 使用原始发票页面的高度来计算
                    #print(page1)   #  显示页面信息, 主要是看mediabox中的width\height
                    total_height = original_page1_heights[i // 2] + (original_page2_heights[i // 2] if page2 else 0)
-                   print(f" 合并2张发票页面高度=页面1高度 {original_page1_heights[i // 2]} + 页面2高度 {original_page2_heights[i // 2]} = {total_height}")
+                   #print(f" 合并2张发票页面高度=页面1高度 {original_page1_heights[i // 2]} + 页面2高度 {original_page2_heights[i // 2]} = {total_height}")
                    scale = min(effective_width / float(original_pdf.pages[i].mediabox.width), effective_height / float(total_height))
                    # scale = 0.93
                    
@@ -505,9 +578,9 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
                    page1.scale_by(scale)
                    # 调整位置
                    x_offset =  (effective_width - page2.mediabox.width * scale)
-                   print(f" 发票第一组1页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page1.mediabox.width} = {x_offset}")
+                   #print(f" 发票第一组1页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page1.mediabox.width} = {x_offset}")
                    y_offset = effective_height - page1.mediabox.height
-                   print(f" 发票第一组1页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page1.mediabox.height} = {y_offset}")
+                   #print(f" 发票第一组1页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page1.mediabox.height} = {y_offset}")
                    new_page.merge_page(page1)
                    new_page.add_transformation((1, 0, 0, 1, x_offset, y_offset))
                    #new_page.add_transformation((1, 0, 0, 1, 0, 395))
@@ -517,23 +590,30 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
                        page2.scale_by(scale)
                        # 调整位置
                        x_offset2 = (effective_width - page2.mediabox.width * scale)/2
-                       print(f" 发票第一组2页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page2.mediabox.width} = {x_offset2}")
+                       #print(f" 发票第一组2页X偏移点=A4有效宽度{effective_width} - 发票页缩小宽度 {page2.mediabox.width} = {x_offset2}")
                        y_offset2 = bottom_margin
                        #y_offset2 = effective_height - (page1.mediabox.height + page2.mediabox.height)
                        #y_offset2 = height - (top_margin + page1.mediabox.height * scale + page2.mediabox.height * scale)
-                       print(f" 发票第一组2页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page2.mediabox.height} = {y_offset2}")
+                       #print(f" 发票第一组2页Y偏移点=A4有效高度{effective_height} - 发票页缩小高度 {page2.mediabox.height} = {y_offset2}")
                        new_page.merge_page(page2)
                        new_page.add_transformation((1, 0, 0, 1, x_offset2, y_offset2))
                        #new_page.add_transformation((1, 0, 0, 1, 0, 25))
                        
                    # 打印关键信息
-                   print(f"处理完成页面 pages {i+1} and {i+2 if page2 else 'N/A'}:")
-                   print(f"  缩放比例: {scale}")
-                   print(f"  发票第一组1页 X offset: {x_offset}, Y offset: {y_offset}")
-                   if page2:
-                       print(f"  发票第一组2页 X offset: {x_offset2}, Y offset: {y_offset2}")
-               
-               writer.add_page(new_page)
+                   #print(f"处理完成页面 pages {i+1} and {i+2 if page2 else 'N/A'}:")
+                   #print(f"  缩放比例: {scale}")
+                   #print(f"  发票第一组1页 X offset: {x_offset}, Y offset: {y_offset}")
+                   #if page2:
+                   #    print(f"  发票第一组2页 X offset: {x_offset2}, Y offset: {y_offset2}")
+
+                   # 创建带有页眉或页脚的 PDF 页面
+                   text = (f"本页发票所属通行费电子票据汇总单号：{summary_number}")
+                   #font_path = system_font_path
+                   pdf_reader = create_pdf_with_headerfooter(text, 595, 842, font_size=8, margin=28.346645669)
+                   
+                   # 合并页脚
+                   new_page.merge_page(pdf_reader.pages[0])
+                   writer.add_page(new_page)
     
     # 保存调整后的PDF文件
     if summary_page_position == 1:
