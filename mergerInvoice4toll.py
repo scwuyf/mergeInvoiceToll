@@ -15,6 +15,8 @@ from reportlab.lib.pagesizes import A4
 from datetime import datetime  # 导入 datetime 模块
 import configparser
 import glob
+import subprocess
+import platform
 
 def create_config_file():
     # 创建ConfigParser对象
@@ -34,22 +36,13 @@ def create_config_file():
 def read_config_file():
     # 创建ConfigParser对象
     config = configparser.ConfigParser()
-    
-    # 读取配置文件
-    config.read('settingtoll.ini')
-    
     if not os.path.exists('settingtoll.ini'):
         create_config_file()
-
     config.read('settingtoll.ini')
         
     try:
         # 从配置文件中获取全局变量
-        global Binding_Position
-        global summary_page_position
-        global header_or_footer
-        global system_font_path
-        
+        global Binding_Position, summary_page_position, header_or_footer, system_font_path
         Binding_Position = config.getint('config', 'Binding_Position')
         summary_page_position = config.getint('config', 'summary_page_position')
         header_or_footer = config.getint('config', 'header_or_footer')
@@ -89,6 +82,9 @@ def select_folder():
     """选择文件夹并开始处理"""
     global folder_path
     folder_path = filedialog.askdirectory()
+
+    if not folder_path:  # 用户点击了取消
+       return  # 退出函数
    	    
     # 检查文件夹内是否存在tempfolder
     tempfolder_path = os.path.join(folder_path, 'tempfolder')
@@ -128,7 +124,7 @@ def calculate_table_to_page_ratio(page):
     ratio = total_table_height / page_height if page_height > 0 else 0
     return ratio
 
-def process_pdf(pdf_path, output_path, summary_number):
+def process_summarysheet(pdf_path, output_path, summary_number):
     """处理 PDF 文件"""
     doc = fitz.open(pdf_path)
     new_doc = fitz.open()
@@ -158,13 +154,114 @@ def process_pdf(pdf_path, output_path, summary_number):
         new_page.show_pdf_page(rect, doc, page.number)
     
     # 保存处理后的文件
-    new_pdf_path = os.path.join(output_path, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
+    #new_pdf_path = os.path.join(output_path, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
+    # 获取原始文件名，并在其基础上添加 _temp4prt 后缀
+    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    if '1piece' in base_name:
+        new_pdf_path = os.path.join(output_path, f"{base_name}_temp4prt.pdf")
+    else:
+        new_pdf_path = os.path.join(output_path, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
     new_doc.save(new_pdf_path)
     doc.close()
     new_doc.close()
+    #print(f"已将文件 {base_name} 处理保存为 {new_pdf_path}")
+
+    # 检测文件名是否包含 "1piece"
+    if '1piece' in os.path.basename(pdf_path):
+        # 合并具有相同summary_number且文件名以ipiece结尾的全部文件
+        merged_pdf_path = merge_1piece_files(output_folder, summary_number, summary_page_position)
+        #if merged_pdf_path:
+            # 调整页面到A4尺寸
+            #adjusted_pdf_path = adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number, binding_position)
+            #print(f"已调整 {merged_pdf_path} 至 A4 尺寸，保存为 {adjusted_pdf_path}")
+        #else:
+            #print(f"文件名 {os.path.basename(pdf_path)} 不包含 ipiece，不进行额外处理。")
     
     # 清理原始文件
     #shutil.move(pdf_path, send2trash.send2trash(pdf_path))
+
+def merge_1piece_files(output_folder, summary_number, summary_page_position):
+    # 寻找以 _1piece_temp4prt 结尾的文件
+    temp_files = [f for f in os.listdir(output_folder) 
+                  if f.endswith('_1piece_temp4prt.pdf')]
+    if not temp_files:
+        print(f"没有找到任何以 {summary_number} 开头且以 _temp4prt 结尾的 PDF 文件")
+        return
+    # 假设只有一个这样的文件
+    temp_file = temp_files[0]
+    temp_pdf_path = os.path.join(output_folder, temp_file)
+    
+    # 打开临时文件
+    temp_doc = fitz.open(temp_pdf_path)
+
+    # 正则表达式匹配8位数字
+    invoice_number_pattern = r'\d{8}'
+        
+    # 寻找以 summary_number 开头的 invoice.pdf 文件
+    summary_invoice_files = [f for f in os.listdir(output_folder) 
+                             if f.startswith(summary_number) and f.endswith('第一次临时合并.pdf')]
+    
+    if not summary_invoice_files:
+        print(f"没有找到任何以 {summary_number} 开头且以 invoice_number 结尾的 PDF 文件")
+        temp_doc.close()
+        return
+    
+    # 假设只有一个这样的文件
+    summary_invoice_file = summary_invoice_files[0]
+    summary_invoice_path = os.path.join(output_folder, summary_invoice_file)
+    
+    # 打开 summary_invoice 文件
+    summary_invoice_doc = fitz.open(summary_invoice_path)
+    
+    # 创建一个新的 PDF 文档
+    merged_doc = fitz.open()
+    
+    # 遍历临时文件中的每一页
+    for temp_page in temp_doc:
+        # 获取临时页面的高度
+        temp_page_height = temp_page.rect.height
+        
+        # 遍历 summary_invoice 文件
+        for summary_invoice_file in summary_invoice_files:
+            summary_invoice_path = os.path.join(output_folder, summary_invoice_file)
+            
+            # 打开 summary_invoice 文件
+            summary_invoice_doc = fitz.open(summary_invoice_path)
+            
+            # 获取 summary_invoice 页面
+            summary_invoice_page = summary_invoice_doc[0]
+            
+            # 计算 summary_invoice 页面的高度
+            invoice_page_height = summary_invoice_page.rect.height
+            
+            # 创建新的 PDF 页面
+            new_page = merged_doc.new_page(width=temp_page.rect.width, height=temp_page.rect.height)
+            
+            # 显示临时页面
+            new_page.show_pdf_page(fitz.Rect(0, 0, temp_page.rect.width, temp_page_height), temp_doc, temp_page.number)
+            
+            # 计算底部对齐的位置
+            bottom_offset = temp_page.rect.height - invoice_page_height - 30
+            
+            # 创建缩放矩阵
+            scale_matrix = fitz.Matrix(0.93, 0.93)
+            
+            # 显示 summary_invoice 页面
+            new_page.show_pdf_page(
+                fitz.Rect(0, bottom_offset, temp_page.rect.width - 40, bottom_offset + invoice_page_height * 0.93),
+                summary_invoice_doc, summary_invoice_page.number,
+                clip=fitz.Rect(0, 0, temp_page.rect.width, invoice_page_height)                
+            )
+            
+            summary_invoice_doc.close()
+    
+    # 保存最终合并的文件
+    final_pdf_path = os.path.join(output_folder, f"{summary_number}_{summary_page_position}_票据汇总单_temp4prt.pdf")
+    merged_doc.save(final_pdf_path)
+    
+    temp_doc.close()    
+    merged_doc.close()
+    return final_pdf_path
 
 def process_files(folder_path, summary_pdf_files):
     for pdf_file in summary_pdf_files:
@@ -173,17 +270,21 @@ def process_files(folder_path, summary_pdf_files):
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 summary_number = extract_summary_number(pdf)
-
                 if summary_number:
                    tables = extract_tables_from_pdf(pdf)
-                   process_tables(tables, summary_number, folder_path) 
-                   new_file_name = f"票据汇总单_{summary_number}.pdf"
+                   process_tables(tables, summary_number, folder_path)
+                   for i, df in enumerate(tables):
+                       #print(len(df))
+                       if len(df) <= 4:
+                          new_file_name = f"{summary_number}_票据汇总单_1piece.pdf"
+                       else:
+                          new_file_name = f"票据汇总单_{summary_number}.pdf"
                    new_file_path = os.path.join(output_folder, new_file_name)
                    shutil.copy(pdf_path, new_file_path)
                    #print(f"已将文件 {pdf_file} 复制并重命名为 {new_file_name}")
 
                    # 处理PDF文件
-                   process_pdf(new_file_path, new_pdf_path, summary_number)                   
+                   process_summarysheet(new_file_path, new_pdf_path, summary_number)                   
                 
         except Exception as e:
             messagebox.showerror("错误", f"处理文件 {pdf_file} 时发生错误: {e}")
@@ -275,8 +376,8 @@ def process_tables(tables, summary_number, folder_path):
     # 输出Excel文件
     output_folder = os.path.join(folder_path, 'tempfolder')
     os.makedirs(output_folder, exist_ok=True)
-    excel_path = os.path.join(output_folder, f"{summary_number}.xlsx")
-    combined_df.to_excel(excel_path, index=False)
+    #excel_path = os.path.join(output_folder, f"{summary_number}.xlsx")
+    #combined_df.to_excel(excel_path, index=False)
 
     # 进一步处理
     match_invoices(combined_df['发票号码'], folder_path, summary_number, output_folder)
@@ -297,7 +398,7 @@ def merge_all_print_versions(output_folder):
     # 遍历所有汇总单号
     for summary_number in summary_numbers:
         # 查找所有符合要求的PDF文件
-        pdf_files = [f for f in os.listdir(output_folder) if f.startswith(summary_number) and f.endswith('temp4prt.pdf')]
+        pdf_files = [f for f in os.listdir(output_folder) if f.startswith(summary_number) and f.endswith('temp4prt.pdf') and ('1piece') not in f]
         if not pdf_files:
             print(f"没有找到任何以 {summary_number}开头的 temp4prt.PDF 文件")
             continue
@@ -396,7 +497,8 @@ def append_blank_page_if_needed(merged_pdf_path, output_folder, summary_number):
     with open(merged_pdf_path, "rb") as fin:
         reader = PdfReader(fin)
         num_pages = len(reader.pages)
-        
+        if num_pages == 1:
+           return
         # 如果页数为奇数，则添加一个空白页
         if num_pages % 2 != 0:
             blank_page_path = create_blank_page(output_folder, summary_number)
@@ -413,10 +515,6 @@ def append_blank_page_if_needed(merged_pdf_path, output_folder, summary_number):
             with open(merged_pdf_path, "wb") as fout:
                 writer.write(fout)
             
-            #print(f"在文件 {merged_pdf_path} 中添加了一个空白页。")
-        #else:
-            #print(f"文件 {merged_pdf_path} 的页数已经是偶数，无需添加空白页。")
-  
 def create_pdf_with_headerfooter(text, width, height, font_size=8, margin=28.346645669):
     """生成一个带有页眉或页脚的 PDF 页面，支持中文"""
     packet = io.BytesIO()
@@ -476,7 +574,9 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
        # 打开合并后的PDF文件
        with open(merged_pdf_path, "rb") as fin:
            reader = PdfReader(fin)
-           
+           if len(reader.pages) == 1:
+               return
+               
            # 每次处理两个页面
            for i in range(0, len(reader.pages), 2):
                new_page = PageObject.create_blank_page(width=width, height=height)
@@ -555,6 +655,8 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
        # 打开合并后的PDF文件
        with open(merged_pdf_path, "rb") as fin:
            reader = PdfReader(fin)
+           if len(reader.pages) == 1:
+              return
            
            # 每次处理两个页面
            for i in range(0, len(reader.pages), 2):
@@ -625,8 +727,36 @@ def adjust_pages_to_a4(merged_pdf_path, output_folder, summary_number):
         writer.write(f)
     return output_path
 
+def open_folder(folder_path):
+    """根据不同的操作系统打开文件夹"""
+    if not os.path.exists(folder_path):
+        #print("文件夹不存在:", folder_path)
+        return
+
+    # 规范化路径
+    folder_path = os.path.normpath(folder_path)
+    
+    system = platform.system()
+    
+    try:
+        if system == 'Windows':
+            # Windows
+            os.startfile(folder_path)
+        elif system == 'Darwin':
+            # macOS
+            subprocess.run(['open', folder_path], check=True)
+        elif system == 'Linux':
+            # Linux
+            subprocess.run(['xdg-open', folder_path], check=True)
+        else:
+            print("不支持的操作系统:", system)
+    except Exception as e:
+        print("无法打开文件夹:", e)
+
 def exit_program(root):
-    """退出程序"""
+    # 退出程序前打开选择的文件夹
+    if 'folder_path' in globals():
+        open_folder(folder_path)
     root.quit()
 
 def clean_temp_files():
@@ -646,20 +776,74 @@ def clean_temp_files():
             else:
                 shutil.move(latest_file, folder_path)
         
-        # 使用绝对路径将 tempfolder 文件夹移动到回收站
+        # 清理 tempfolder 文件夹内的文件
         tempfolder_abs_path = os.path.abspath(output_folder)
-        try:
-            send2trash.send2trash(tempfolder_abs_path)
-        except OSError as e:
-            messagebox.showwarning("警告", "临时文件夹中的某些文件可能正在被其他应用打开，请关闭后再试。")
-            return  # 返回文件夹选择界面
-
-        #send2trash.send2trash(tempfolder_abs_path)
+        
+        # 删除名字中包含 temp4prt 和 临时合并 的文件
+        temp4prt_pattern = os.path.join(output_folder, "*temp4prt*")
+        temp_merge_pattern = os.path.join(output_folder, "*临时合并*")
+        blank_pattern = os.path.join(output_folder, "*blank_page*")
+        for pattern in [temp4prt_pattern, temp_merge_pattern, blank_pattern]:
+            for file in glob.glob(pattern):
+                os.remove(file)
+        
+        # 处理名字以 _1piece.pdf 结尾的文件
+        one_piece_pattern = os.path.join(output_folder, "*_1piece.pdf")
+        for file in glob.glob(one_piece_pattern):
+            new_filename = os.path.splitext(file)[0].replace("_1piece", "") + ".pdf"
+            os.rename(file, new_filename)
+        
+        # 处理以 票据汇总单_summary_number.pdf 形式命名的文件
+        summary_pattern = os.path.join(output_folder, "票据汇总单_*.pdf")
+        for file in glob.glob(summary_pattern):
+            
+            parts = os.path.basename(file).split("_")[1]
+            summarynumber = parts.split(".pdf")[0]
+            new_filename = f"{summarynumber}_通行费电子票据汇总单.pdf"
+            os.rename(file, os.path.join(output_folder, new_filename))
+        
+        # 将 tempfolder 文件夹更名为 “汇总单发票整理”
+        new_folder_name = "汇总单发票整理"
+        new_folder_path = os.path.join(os.path.dirname(output_folder), new_folder_name)
+        
+        # 如果目标文件夹已经存在，则将文件移动到该文件夹
+        if os.path.exists(new_folder_path):
+            # 移动文件到目标文件夹
+            for file in os.listdir(output_folder):
+                src_file = os.path.join(output_folder, file)
+                dst_file = os.path.join(new_folder_path, file)
+                
+        # 如果目标文件夹已经存在，则将文件移动到该文件夹
+        if os.path.exists(new_folder_path):
+            # 移动文件到目标文件夹
+            for file in os.listdir(output_folder):
+                src_file = os.path.join(output_folder, file)
+                dst_file = os.path.join(new_folder_path, file)
+                
+                if os.path.exists(dst_file):
+                    answer = messagebox.askyesno("文件已存在", f"文件 {file} 已经存在，是否覆盖？")
+                    if answer:
+                        os.remove(dst_file)
+                        shutil.move(src_file, dst_file)
+                    else:
+                        os.remove(src_file)
+                else:
+                    shutil.move(src_file, dst_file)
+        else:
+            # 创建新文件夹并移动文件
+            os.makedirs(new_folder_path)
+            for file in os.listdir(output_folder):
+                src_file = os.path.join(output_folder, file)
+                dst_file = os.path.join(new_folder_path, file)
+                shutil.move(src_file, dst_file)
+        
+        # 删除空的 tempfolder 文件夹
+        os.rmdir(output_folder)
+        
         messagebox.showinfo("清理完成", "过程文件已清理。")
     else:
         messagebox.showwarning("警告", "没有找到临时文件夹。")
-
-
+        
 def update_button_state():
     """更新按钮的状态"""
     if summary_numbers and os.path.exists(output_folder):
@@ -692,7 +876,7 @@ def main():
     btn_select_folder = tk.Button(root, text="选择文件夹", width=button_width, height=button_height, command=select_folder)
     btn_select_folder.pack(pady=20)
 
-    # 添加一个“完成”按钮
+    # 添加一个“生成打印文件”按钮
     global btn_complete
     btn_complete = tk.Button(root, text="生成打印文件", width=button_width, height=button_height, command=lambda: merge_all_print_versions(output_folder) if summary_numbers else messagebox.showwarning("警告", "没有汇总单号可供处理"), state=tk.DISABLED)
     btn_complete.pack(pady=20)
@@ -713,3 +897,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+#### mix by immt ####
